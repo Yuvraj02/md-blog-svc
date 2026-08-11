@@ -1,0 +1,128 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: blog-service-config
+  labels:
+    app: blog-service
+data:
+  APP_ENV: "production"
+  SERVICE_NAME: "blog-service"
+  GRPC_PORT: "50052"
+  DATABASE_HOST: "blog-postgres"
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: "marketing_digest_blog"
+  DATABASE_USER: "blog"
+  DATABASE_SSLMODE: "require"
+  SHUTDOWN_TIMEOUT: "15s"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: blog-service-secrets
+  labels:
+    app: blog-service
+type: Opaque
+stringData:
+  DATABASE_PASSWORD: "REPLACE_VIA_SEALED_SECRETS_OR_EXTERNAL_SECRETS"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: blog-service-migrate
+  labels:
+    app: blog-service
+    component: migrate
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: blog-service
+        component: migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: atlas
+          image: arigaio/atlas:latest
+          args:
+            - migrate
+            - apply
+            - --dir
+            - file:///migrations
+            - --url
+            - $(DATABASE_URL)
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: blog-service-db-url
+                  key: url
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+      volumes:
+        - name: migrations
+          configMap:
+            name: blog-service-migrations
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blog-service
+  labels:
+    app: blog-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: blog-service
+  template:
+    metadata:
+      labels:
+        app: blog-service
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: blog-service
+          image: marketing-digest-blog-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: grpc
+              containerPort: 50052
+          envFrom:
+            - configMapRef:
+                name: blog-service-config
+            - secretRef:
+                name: blog-service-secrets
+          readinessProbe:
+            grpc:
+              port: 50052
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            grpc:
+              port: 50052
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: blog-service
+  labels:
+    app: blog-service
+spec:
+  selector:
+    app: blog-service
+  ports:
+    - name: grpc
+      port: 50052
+      targetPort: grpc
