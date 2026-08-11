@@ -16,5 +16,5 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/blog-service /blog-service
 USER nonroot:nonroot
-EXPOSE 50052
+EXPOSE 50051
 ENTRYPOINT ["/blog-service"]
