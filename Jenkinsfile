@@ -1,26 +1,21 @@
-// Pipeline: blog-service
-// Script Path: backend/services/blog-service/Jenkinsfile
-// Flow: build/push image -> k8s Atlas Job -> bump md-helm-values image.tag (Argo CD deploys)
+// Pipeline for md-blog-svc (service repo root = workspace).
+// Flow: build/push image -> k8s Atlas Job -> bump md-helm-values image.tag (Argo CD)
 //
-// Jenkins credentials:
-//   kubeconfig-prod          (secret file)  — cluster kubeconfig
-//   github-helm-values       (username + password/token) — push to md-helm-values
-// Cluster must already have Secret blog-service-db-url (key: url) in ns marketing-digest.
+// Credentials: kubeconfig-prod (file), github-helm-values (username/token)
+// Cluster Secret: blog-service-db-url (key: url) in ns marketing-digest
 
 pipeline {
   agent any
 
   environment {
-    SERVICE            = 'blog-service'
-    ECR_NAME           = 'blog'
-    HELM_VALUES_PATH   = 'blogs/prod/values.yaml'
-    MIGRATE_JOB_TMPL   = 'backend/services/blog-service/deployments/ci-migrate-job.yaml'
-    HELM_VALUES_REPO   = 'https://github.com/Yuvraj02/md-helm-values.git'
-    K8S_NAMESPACE      = 'marketing-digest'
-    AWS_REGION         = "${env.AWS_DEFAULT_REGION ?: 'ap-south-1'}"
-    GO_IMAGE           = 'golang:1.25-alpine'
-    BUF_IMAGE          = 'bufbuild/buf:1.47.2'
-    SERVICE_DIR        = 'backend/services/blog-service'
+    SERVICE          = 'blog-service'
+    ECR_NAME         = 'blog'
+    HELM_VALUES_PATH = 'blogs/prod/values.yaml'
+    HELM_VALUES_REPO = 'https://github.com/Yuvraj02/md-helm-values.git'
+    MIGRATE_JOB_TMPL = 'deployments/ci-migrate-job.yaml'
+    K8S_NAMESPACE    = 'marketing-digest'
+    AWS_REGION       = "${env.AWS_DEFAULT_REGION ?: 'ap-south-1'}"
+    GO_IMAGE         = 'golang:1.25-alpine'
   }
 
   stages {
@@ -28,9 +23,11 @@ pipeline {
       steps {
         checkout scm
         script {
-          // GIT_COMMIT is only reliable after checkout scm
           env.IMAGE_TAG = env.GIT_COMMIT.take(8)
           echo "IMAGE_TAG=${env.IMAGE_TAG}"
+          if (!fileExists('go.mod') || !fileExists('Dockerfile')) {
+            error('Expected md-blog-svc repo root (go.mod + Dockerfile). Check Jenkins SCM URL.')
+          }
         }
       }
     }
@@ -38,7 +35,6 @@ pipeline {
     stage('Resolve ECR') {
       steps {
         script {
-          // Resolve in shell only — Groovy System.getenv is blocked by script-security sandbox.
           def account = sh(
             script: '''
               set -euo pipefail
@@ -55,7 +51,7 @@ pipeline {
             returnStdout: true
           ).trim()
           if (!account) {
-            error('Could not resolve AWS account id (MD_ACCOUNT_ID unset and IMDS failed)')
+            error('Could not resolve AWS account id')
           }
           env.AWS_ACCOUNT_ID = account
           env.IMAGE_REPO = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com/marketing-digest/${env.ECR_NAME}"
@@ -68,9 +64,10 @@ pipeline {
       steps {
         sh '''
           docker run --rm \
-            -v "$PWD":/workspace -w "/workspace/${SERVICE_DIR}" \
+            -e GOWORK=off \
+            -v "$PWD":/workspace -w /workspace \
             ${GO_IMAGE} \
-            sh -c "apk add --no-cache git make && go version && make tidy"
+            sh -c "apk add --no-cache git && go version && go mod tidy"
         '''
       }
     }
@@ -79,12 +76,10 @@ pipeline {
       steps {
         sh '''
           docker run --rm \
-            -v "$PWD":/workspace -w "/workspace/${SERVICE_DIR}" \
+            -e GOWORK=off \
+            -v "$PWD":/workspace -w /workspace \
             ${GO_IMAGE} \
-            sh -c "apk add --no-cache git make && make lint"
-          docker run --rm \
-            -v "$PWD/md-protos":/workspace -w /workspace \
-            ${BUF_IMAGE} lint
+            sh -c "apk add --no-cache git && go vet ./..."
         '''
       }
     }
@@ -93,21 +88,17 @@ pipeline {
       steps {
         sh '''
           docker run --rm \
-            -v "$PWD":/workspace -w "/workspace/${SERVICE_DIR}" \
+            -e GOWORK=off \
+            -v "$PWD":/workspace -w /workspace \
             ${GO_IMAGE} \
-            sh -c "apk add --no-cache git make && make test"
+            sh -c "apk add --no-cache git && go test ./..."
         '''
       }
     }
 
     stage('Docker Build') {
       steps {
-        sh '''
-          docker build \
-            -f backend/services/blog-service/Dockerfile \
-            -t ${IMAGE_REPO}:${IMAGE_TAG} \
-            .
-        '''
+        sh 'docker build -t ${IMAGE_REPO}:${IMAGE_TAG} .'
       }
     }
 
@@ -137,7 +128,6 @@ pipeline {
             sed -e "s|__JOB_NAME__|${JOB_NAME}|g" -e "s|__IMAGE__|${IMAGE}|g" \
               "${MIGRATE_JOB_TMPL}" | kubectl apply -f -
 
-            echo "Waiting for Job ${JOB_NAME} (image ${IMAGE}) ..."
             if ! kubectl -n "${K8S_NAMESPACE}" wait --for=condition=complete "job/${JOB_NAME}" --timeout=300s; then
               kubectl -n "${K8S_NAMESPACE}" logs "job/${JOB_NAME}" || true
               kubectl -n "${K8S_NAMESPACE}" describe "job/${JOB_NAME}" || true
@@ -163,16 +153,14 @@ pipeline {
               "https://${GIT_USER}:${GIT_TOKEN}@github.com/Yuvraj02/md-helm-values.git" \
               helm-values-work
             cd helm-values-work
-
             test -f "${HELM_VALUES_PATH}"
             sed -i -E "s/^(  tag: ).*/\\1\\"${IMAGE_TAG}\\"/" "${HELM_VALUES_PATH}"
             sed -i -E "s|^(  repository: ).*|\\1${IMAGE_REPO}|" "${HELM_VALUES_PATH}"
-
             git config user.email "jenkins@marketing-digest.local"
             git config user.name "jenkins"
             git add "${HELM_VALUES_PATH}"
             if git diff --cached --quiet; then
-              echo "No helm-values change (tag already ${IMAGE_TAG})"
+              echo "No helm-values change"
             else
               git commit -m "chore(blogs): bump image.tag to ${IMAGE_TAG}"
               git push origin HEAD:main
@@ -185,10 +173,10 @@ pipeline {
 
   post {
     failure {
-      echo 'blog-service failed. helm-values is only bumped after the migration Job succeeds, so Argo CD will not roll out a broken migration.'
+      echo 'blog-service failed before or during migrate; helm-values was not bumped.'
     }
     success {
-      echo "Pushed ${IMAGE_REPO}:${IMAGE_TAG} and bumped md-helm-values ${HELM_VALUES_PATH}. Argo CD will sync the Deployment."
+      echo "Pushed ${IMAGE_REPO}:${IMAGE_TAG}; Argo CD will sync from helm-values."
     }
   }
 }
