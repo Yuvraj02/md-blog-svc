@@ -35,15 +35,26 @@ pipeline {
     stage('Resolve ECR') {
       steps {
         script {
-          env.AWS_ACCOUNT_ID = sh(
-            script: '''
-              docker run --rm \
-                -e AWS_DEFAULT_REGION \
-                amazon/aws-cli:2.15.30 \
-                sts get-caller-identity --query Account --output text
-            ''',
-            returnStdout: true
-          ).trim()
+          // Prefer process env (docker -e MD_ACCOUNT_ID). Pipeline env.* often misses it.
+          def account = System.getenv('MD_ACCOUNT_ID')?.trim()
+          if (!account) {
+            // EC2 IMDSv2 — no docker / no hardcoded account
+            account = sh(
+              script: '''
+                set -euo pipefail
+                TOKEN=$(curl -sS -f -X PUT "http://169.254.169.254/latest/api/token" \
+                  -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+                curl -sS -f -H "X-aws-ec2-metadata-token: ${TOKEN}" \
+                  http://169.254.169.254/latest/dynamic/instance-identity/document \
+                  | sed -n 's/.*"accountId"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p'
+              ''',
+              returnStdout: true
+            ).trim()
+          }
+          if (!account) {
+            error('Could not resolve AWS account id (MD_ACCOUNT_ID unset and IMDS failed)')
+          }
+          env.AWS_ACCOUNT_ID = account
           env.IMAGE_REPO = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com/marketing-digest/${env.ECR_NAME}"
           echo "IMAGE=${env.IMAGE_REPO}:${env.IMAGE_TAG}"
         }
