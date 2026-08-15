@@ -1,0 +1,43 @@
+# Applied by Jenkins after pushing IMAGE_REPO:IMAGE_TAG.
+# Runs Atlas from that same ECR image (migrations baked in at /migrations).
+# Requires Secret blog-service-db-url (key: url) in namespace marketing-digest.
+#
+# Jenkins substitutes:
+#   __JOB_NAME__  e.g. blog-migrate-abc12345
+#   __IMAGE__     e.g. 0954....amazonaws.com/marketing-digest/blog:abc12345
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: __JOB_NAME__
+  namespace: marketing-digest
+  labels:
+    app: blog-service
+    component: migrate
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: blog-service
+        component: migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: __IMAGE__
+          imagePullPolicy: Always
+          command: ["atlas"]
+          args:
+            - migrate
+            - apply
+            - --dir
+            - file:///migrations
+            - --url
+            - $(DATABASE_URL)
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: blog-service-db-url
+                  key: url
