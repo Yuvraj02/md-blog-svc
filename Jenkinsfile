@@ -38,22 +38,22 @@ pipeline {
     stage('Resolve ECR') {
       steps {
         script {
-          // Prefer process env (docker -e MD_ACCOUNT_ID). Pipeline env.* often misses it.
-          def account = System.getenv('MD_ACCOUNT_ID')?.trim()
-          if (!account) {
-            // EC2 IMDSv2 — no docker / no hardcoded account
-            account = sh(
-              script: '''
-                set -euo pipefail
-                TOKEN=$(curl -sS -f -X PUT "http://169.254.169.254/latest/api/token" \
-                  -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
-                curl -sS -f -H "X-aws-ec2-metadata-token: ${TOKEN}" \
-                  http://169.254.169.254/latest/dynamic/instance-identity/document \
-                  | sed -n 's/.*"accountId"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p'
-              ''',
-              returnStdout: true
-            ).trim()
-          }
+          // Resolve in shell only — Groovy System.getenv is blocked by script-security sandbox.
+          def account = sh(
+            script: '''
+              set -euo pipefail
+              if [ -n "${MD_ACCOUNT_ID:-}" ]; then
+                printf '%s' "$MD_ACCOUNT_ID"
+                exit 0
+              fi
+              TOKEN=$(curl -sS -f -X PUT "http://169.254.169.254/latest/api/token" \
+                -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+              curl -sS -f -H "X-aws-ec2-metadata-token: ${TOKEN}" \
+                http://169.254.169.254/latest/dynamic/instance-identity/document \
+                | sed -n 's/.*"accountId"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p'
+            ''',
+            returnStdout: true
+          ).trim()
           if (!account) {
             error('Could not resolve AWS account id (MD_ACCOUNT_ID unset and IMDS failed)')
           }
