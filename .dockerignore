@@ -1,6 +1,5 @@
 .git
 .gitignore
-.bin
 bin/
 .env
 .env.*
