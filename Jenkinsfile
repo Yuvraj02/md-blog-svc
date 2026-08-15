@@ -3,19 +3,23 @@
 //
 // Credentials: kubeconfig-prod (file), github-helm-values (username/token)
 // Cluster Secret: blog-service-db-url (key: url) in ns marketing-digest
+//
+// Jenkins itself runs in Docker with docker.sock. Sibling containers must mount the
+// named volume "jenkins_home" (not -v $PWD) so they see the workspace files.
 
 pipeline {
   agent any
 
   environment {
-    SERVICE          = 'blog-service'
-    ECR_NAME         = 'blog'
-    HELM_VALUES_PATH = 'blogs/prod/values.yaml'
-    HELM_VALUES_REPO = 'https://github.com/Yuvraj02/md-helm-values.git'
-    MIGRATE_JOB_TMPL = 'deployments/ci-migrate-job.yaml'
-    K8S_NAMESPACE    = 'marketing-digest'
-    AWS_REGION       = "${env.AWS_DEFAULT_REGION ?: 'ap-south-1'}"
-    GO_IMAGE         = 'golang:1.25-alpine'
+    SERVICE             = 'blog-service'
+    ECR_NAME            = 'blog'
+    HELM_VALUES_PATH    = 'blogs/prod/values.yaml'
+    HELM_VALUES_REPO    = 'https://github.com/Yuvraj02/md-helm-values.git'
+    MIGRATE_JOB_TMPL    = 'deployments/ci-migrate-job.yaml'
+    K8S_NAMESPACE       = 'marketing-digest'
+    AWS_REGION          = "${env.AWS_DEFAULT_REGION ?: 'ap-south-1'}"
+    GO_IMAGE            = 'golang:1.25-alpine'
+    JENKINS_HOME_VOLUME = 'jenkins_home'
   }
 
   stages {
@@ -65,12 +69,21 @@ pipeline {
         sh '''
           set -eux
           test -f go.mod
+          cat > .ci-run.sh <<'EOF'
+#!/bin/sh
+set -e
+apk add --no-cache git
+go version
+go mod tidy
+EOF
+          chmod +x .ci-run.sh
           docker run --rm \
             -e GOWORK=off \
-            -v "$PWD":/workspace -w /workspace \
+            -v "${JENKINS_HOME_VOLUME}:/var/jenkins_home" \
+            -w "${PWD}" \
             --entrypoint /bin/sh \
-            ${GO_IMAGE} \
-            -ec 'apk add --no-cache git && go version && go mod tidy'
+            "${GO_IMAGE}" \
+            "${PWD}/.ci-run.sh"
         '''
       }
     }
@@ -78,12 +91,21 @@ pipeline {
     stage('Lint') {
       steps {
         sh '''
+          set -eux
+          cat > .ci-run.sh <<'EOF'
+#!/bin/sh
+set -e
+apk add --no-cache git
+go vet ./...
+EOF
+          chmod +x .ci-run.sh
           docker run --rm \
             -e GOWORK=off \
-            -v "$PWD":/workspace -w /workspace \
+            -v "${JENKINS_HOME_VOLUME}:/var/jenkins_home" \
+            -w "${PWD}" \
             --entrypoint /bin/sh \
-            ${GO_IMAGE} \
-            -ec 'apk add --no-cache git && go vet ./...'
+            "${GO_IMAGE}" \
+            "${PWD}/.ci-run.sh"
         '''
       }
     }
@@ -91,12 +113,21 @@ pipeline {
     stage('Unit Tests') {
       steps {
         sh '''
+          set -eux
+          cat > .ci-run.sh <<'EOF'
+#!/bin/sh
+set -e
+apk add --no-cache git
+go test ./...
+EOF
+          chmod +x .ci-run.sh
           docker run --rm \
             -e GOWORK=off \
-            -v "$PWD":/workspace -w /workspace \
+            -v "${JENKINS_HOME_VOLUME}:/var/jenkins_home" \
+            -w "${PWD}" \
             --entrypoint /bin/sh \
-            ${GO_IMAGE} \
-            -ec 'apk add --no-cache git && go test ./...'
+            "${GO_IMAGE}" \
+            "${PWD}/.ci-run.sh"
         '''
       }
     }
