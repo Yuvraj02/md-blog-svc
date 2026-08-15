@@ -1,0 +1,13 @@
+.git
+.gitignore
+.bin
+bin/
+.env
+.env.*
+!.env.example
+*.md
+Jenkinsfile
+.ci-run.sh
+.idea/
+.vscode/
+deployments/

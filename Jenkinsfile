@@ -134,7 +134,7 @@ EOF
 
     stage('Docker Build') {
       steps {
-        sh 'docker build -t ${IMAGE_REPO}:${IMAGE_TAG} .'
+        sh 'DOCKER_BUILDKIT=0 docker build -t ${IMAGE_REPO}:${IMAGE_TAG} .'
       }
     }
 

@@ -12,8 +12,7 @@ COPY go.mod go.sum ./
 COPY pkg ./pkg
 COPY . .
 
-RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download && \
+RUN go mod download && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/blog-service ./cmd/server
 
 FROM arigaio/atlas:latest AS atlas
