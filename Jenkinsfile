@@ -18,6 +18,9 @@ pipeline {
     HELM_VALUES_REPO   = 'https://github.com/Yuvraj02/md-helm-values.git'
     K8S_NAMESPACE      = 'marketing-digest'
     AWS_REGION         = "${env.AWS_DEFAULT_REGION ?: 'ap-south-1'}"
+    GO_IMAGE           = 'golang:1.25-alpine'
+    BUF_IMAGE          = 'bufbuild/buf:1.47.2'
+    SERVICE_DIR        = 'backend/services/blog-service'
   }
 
   stages {
@@ -63,21 +66,37 @@ pipeline {
 
     stage('Deps') {
       steps {
-        sh 'go version'
-        sh 'cd backend/services/blog-service && make tidy'
+        sh '''
+          docker run --rm \
+            -v "$PWD":/workspace -w "/workspace/${SERVICE_DIR}" \
+            ${GO_IMAGE} \
+            sh -c "apk add --no-cache git make && go version && make tidy"
+        '''
       }
     }
 
     stage('Lint') {
       steps {
-        sh 'cd backend/services/blog-service && make lint'
-        sh 'cd md-protos && buf lint'
+        sh '''
+          docker run --rm \
+            -v "$PWD":/workspace -w "/workspace/${SERVICE_DIR}" \
+            ${GO_IMAGE} \
+            sh -c "apk add --no-cache git make && make lint"
+          docker run --rm \
+            -v "$PWD/md-protos":/workspace -w /workspace \
+            ${BUF_IMAGE} lint
+        '''
       }
     }
 
     stage('Unit Tests') {
       steps {
-        sh 'cd backend/services/blog-service && make test'
+        sh '''
+          docker run --rm \
+            -v "$PWD":/workspace -w "/workspace/${SERVICE_DIR}" \
+            ${GO_IMAGE} \
+            sh -c "apk add --no-cache git make && make test"
+        '''
       }
     }
 
